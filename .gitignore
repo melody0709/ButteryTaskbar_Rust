@@ -1,0 +1,11 @@
+.build
+.vs
+*.rdbg
+*.exe
+*.obj
+*.pdb
+local_environment.jai
+
+# Added by cargo
+
+/target
