@@ -1,4 +1,6 @@
-# Buttery Taskbar（Rust 重构版）
+# Buttery Taskbar（Rust 重构版） — v2.5.0
+
+发行：v2.5.0 — 可配置全局快捷键、Win11 兼容修复与 Rust 重构。
 
 [English](README.md) | 简体中文
 
@@ -28,7 +30,7 @@ Rust 重构版沿用了旧版的核心设计，包括：
 
 - 托盘图标驱动的控制入口
 - 基于 Win32 API 的任务栏显隐控制
-- `Ctrl` + `Win` + `F11` 的启用/禁用快捷键
+- 可配置的全局启用/禁用快捷键（默认值为 `Ctrl` + `Win` + `F11`）
 - 屏幕底边滚轮唤出逻辑
 - 与 Windows 自动隐藏状态协同
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的开机启动开关
@@ -41,7 +43,7 @@ Rust 重构版沿用了旧版的核心设计，包括：
 - 原生 Windows 弹出菜单
 - 主任务栏与副任务栏的显隐控制
 - 对开始菜单、托盘溢出区等 Shell 前台窗口的可见性判断
-- Windows 键与 `Ctrl` + `Win` + `F11` 的低级键盘钩子
+- Windows 键与可配置全局快捷键的低级键盘钩子
 - 底边滚轮触发的鼠标钩子
 - `%APPDATA%\Buttery Taskbar\config.json` 配置持久化
 - 基于注册表的开机启动开关
@@ -89,6 +91,44 @@ Rust 版目前保留了以下行为模型：
 - 从托盘图标打开右键菜单，菜单会尽量浮在任务栏上方
 - 启用滚轮功能后，在主显示器底边滚动会模拟一次 Windows 键以唤出开始菜单
 - 程序禁用时，可以按设置保留 Windows 自带自动隐藏
+
+## 自定义启用/禁用快捷键
+
+全局启用/禁用快捷键可以通过 `%APPDATA%\Buttery Taskbar\config.json` 配置。
+
+也可以从托盘图标右键菜单里的 `Edit shortcut settings...` 直接打开这个配置文件进行修改。
+
+相关字段：
+
+- `toggle_shortcut_enabled`：是否启用全局快捷键
+- `toggle_shortcut`：快捷键字符串，默认值为 `Ctrl+Win+F11`
+
+支持的格式：
+
+- 零个或多个修饰键：`Ctrl`、`Alt`、`Shift`、`Win`
+- 再加上一个普通按键，例如 `A`、`5`、`F10`、`Pause`、`Insert`、`Delete`、`Home`、`End`、`PageUp`、`PageDown`、`Up`、`Down`、`Left`、`Right`
+
+示例：
+
+```json
+{
+	"toggle_shortcut": "Ctrl+Alt+B"
+}
+```
+
+```json
+{
+	"toggle_shortcut": "Shift+F10"
+}
+```
+
+```json
+{
+	"toggle_shortcut": "Win+Pause"
+}
+```
+
+如果快捷键字符串无效，程序会自动回退到默认快捷键。手动修改配置文件后需要重启程序才能生效。
 
 ## 旧版参考
 

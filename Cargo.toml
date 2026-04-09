@@ -1,6 +1,6 @@
 [package]
 name = "buttery-taskbar"
-version = "0.1.0"
+version = "2.5.0"
 edition = "2024"
 
 [dependencies]

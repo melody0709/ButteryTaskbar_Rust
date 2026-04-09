@@ -1,4 +1,6 @@
-# Buttery Taskbar (Rust Rewrite)
+# Buttery Taskbar (Rust Rewrite) — v2.5.0
+
+Release: v2.5.0 — configurable global shortcut, Win11 fixes, and Rust port.
 
 English | [简体中文](README.zh-CN.md)
 
@@ -27,7 +29,7 @@ The Rust port is based on the old version's behavior, including:
 
 - tray-based control flow
 - taskbar show/hide control through Win32 APIs
-- `Ctrl` + `Win` + `F11` toggle support
+- configurable global toggle shortcut (default: `Ctrl` + `Win` + `F11`)
 - scroll-at-screen-edge activation
 - auto-hide state coordination with Windows
 - startup registration in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
@@ -42,7 +44,7 @@ Implemented in the current Rust version:
 - native popup tray menu
 - taskbar visibility control for primary and secondary taskbars
 - Start/menu/taskbar shell-UI visibility heuristics
-- keyboard hook for the Windows key and `Ctrl` + `Win` + `F11`
+- keyboard hook for the Windows key and the configurable global toggle shortcut
 - mouse wheel hook for screen-edge reveal
 - config persistence in `%APPDATA%\Buttery Taskbar\config.json`
 - startup toggle through the per-user Run registry key
@@ -92,6 +94,44 @@ The Rust rewrite currently keeps the following behavior model:
 - the tray menu is opened from the notification icon and is positioned above the taskbar edge
 - when enabled, scrolling at the bottom edge of the primary monitor triggers a synthetic Windows key press so Start can open
 - when disabled, the app can optionally keep Windows auto-hide enabled
+
+## Custom Toggle Shortcut
+
+The global toggle shortcut is configurable through `%APPDATA%\Buttery Taskbar\config.json`.
+
+You can open that file directly from the tray icon's right-click menu through `Edit shortcut settings...`.
+
+Relevant fields:
+
+- `toggle_shortcut_enabled`: enables or disables the global toggle shortcut
+- `toggle_shortcut`: shortcut string, default `Ctrl+Win+F11`
+
+Supported format:
+
+- zero or more modifiers: `Ctrl`, `Alt`, `Shift`, `Win`
+- exactly one non-modifier key such as `A`, `5`, `F10`, `Pause`, `Insert`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, `Up`, `Down`, `Left`, or `Right`
+
+Examples:
+
+```json
+{
+	"toggle_shortcut": "Ctrl+Alt+B"
+}
+```
+
+```json
+{
+	"toggle_shortcut": "Shift+F10"
+}
+```
+
+```json
+{
+	"toggle_shortcut": "Win+Pause"
+}
+```
+
+Invalid shortcut strings fall back to the default shortcut. Restart the app after editing the config file manually.
 
 ## Legacy Reference
 
