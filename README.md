@@ -5,6 +5,9 @@ English | [简体中文](README.zh-CN.md)
 This repository now hosts a Rust rewrite of Buttery Taskbar, based on the behavior and feature set of the original Jai implementation.
 
 The legacy Jai source tree is still included locally under `ButteryTaskbar2_jai/`, while the repository root is now the actively developed Rust project.
+## Project Screenshots
+
+<img src="assets/icon.webp" width="50%" />
 
 ## What This Project Is
 
@@ -54,6 +57,8 @@ Current differences from the old Jai version:
 - `src/`: active Rust implementation
 - `assets/`: Rust-side application assets, including the embedded app icon
 - `ButteryTaskbar2_jai/`: archived legacy Jai implementation kept for reference and parity work
+
+
 
 ## Build
 
