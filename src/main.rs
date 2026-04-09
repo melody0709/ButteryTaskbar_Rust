@@ -13,10 +13,14 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError, TrySendE
 use std::sync::{Mutex, OnceLock};
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
 use winreg::RegKey;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::core::GUID;
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, PROPERTYKEY, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY};
+use windows_sys::Win32::System::Com::{CoInitializeEx, CoTaskMemAlloc, CoUninitialize, COINIT_APARTMENTTHREADED};
+use windows_sys::Win32::System::Com::StructuredStorage::{PROPVARIANT, PropVariantClear};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::SystemInformation::GetTickCount64;
+use windows_sys::Win32::System::Variant::VT_LPWSTR;
 use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows_sys::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -28,17 +32,19 @@ use windows_sys::Win32::UI::Shell::{
     NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETFOCUS, NIM_SETVERSION, NIN_SELECT,
     NOTIFYICONDATAW, ABM_GETSTATE, ABM_SETSTATE, ABS_AUTOHIDE,
 };
+use windows_sys::Win32::UI::Shell::PropertiesSystem::{PSGetPropertyKeyFromName, SHGetPropertyStoreForWindow};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CallNextHookEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     DispatchMessageW, FindWindowExW, FindWindowW, GetClassNameW, GetCursorPos, GetForegroundWindow, GetMessageW,
-    EVENT_SYSTEM_FOREGROUND, HHOOK, IDC_ARROW, IDI_APPLICATION, IMAGE_ICON, IsWindowVisible,
+    EVENT_SYSTEM_FOREGROUND, HHOOK, ICON_BIG, ICON_SMALL, IDC_ARROW, IDI_APPLICATION, IMAGE_ICON,
+    IsWindowVisible,
     KBDLLHOOKSTRUCT, LR_DEFAULTSIZE, LR_SHARED, LoadCursorW, LoadIconW, LoadImageW, MF_CHECKED,
     MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MSLLHOOKSTRUCT, MSG, PostMessageW, PostQuitMessage,
-    RegisterClassExW, RegisterWindowMessageW, SetForegroundWindow, SetWindowsHookExW, ShowWindow,
+    RegisterClassExW, RegisterWindowMessageW, SendMessageW, SetForegroundWindow, SetWindowsHookExW, ShowWindow,
     TPM_BOTTOMALIGN, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu,
     TranslateMessage, UnhookWindowsHookEx, WNDCLASSEXW, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_CONTEXTMENU,
     WM_CREATE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP, WM_MOUSEWHEEL, WM_NULL, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, SW_HIDE, SW_SHOWNOACTIVATE, SW_SHOWNORMAL,
+    WM_RBUTTONUP, WM_SETICON, WM_SYSKEYDOWN, WM_SYSKEYUP, SW_HIDE, SW_SHOWNOACTIVATE, SW_SHOWNORMAL,
     WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
 };
 
@@ -53,6 +59,7 @@ const APP_ICON_RESOURCE_ID: u16 = 1;
 const NOTIFYICON_VERSION_4_VALUE: u32 = 4;
 const NINF_KEY: u32 = 1;
 const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
+const IID_PROPERTY_STORE: GUID = GUID::from_u128(0x886d8eeb_8cf2_4446_8d02_cdba1dbdcf99);
 
 const CMD_TOGGLE_ENABLED: usize = 1001;
 const CMD_TOGGLE_SHORTCUT: usize = 1002;
@@ -63,6 +70,79 @@ const CMD_OPEN_RELEASES: usize = 1006;
 const CMD_QUIT: usize = 1999;
 
 static APP: OnceLock<AppState> = OnceLock::new();
+
+#[repr(C)]
+struct IUnknownVtable {
+    query_interface: unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> i32,
+    add_ref: unsafe extern "system" fn(*mut c_void) -> u32,
+    release: unsafe extern "system" fn(*mut c_void) -> u32,
+}
+
+#[repr(C)]
+struct IPropertyStoreVtable {
+    base__: IUnknownVtable,
+    get_count: unsafe extern "system" fn(*mut c_void, *mut u32) -> i32,
+    get_at: unsafe extern "system" fn(*mut c_void, u32, *mut PROPERTYKEY) -> i32,
+    get_value: unsafe extern "system" fn(*mut c_void, *const PROPERTYKEY, *mut PROPVARIANT) -> i32,
+    set_value: unsafe extern "system" fn(*mut c_void, *const PROPERTYKEY, *const PROPVARIANT) -> i32,
+    commit: unsafe extern "system" fn(*mut c_void) -> i32,
+}
+
+#[repr(C)]
+struct IPropertyStoreRaw {
+    lp_vtbl: *const IPropertyStoreVtable,
+}
+
+struct ComGuard {
+    should_uninitialize: bool,
+}
+
+impl ComGuard {
+    fn initialize() -> Self {
+        let hr = unsafe { CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32) };
+        Self {
+            should_uninitialize: hr >= 0,
+        }
+    }
+}
+
+impl Drop for ComGuard {
+    fn drop(&mut self) {
+        if self.should_uninitialize {
+            unsafe {
+                CoUninitialize();
+            }
+        }
+    }
+}
+
+struct WideStringPropVariant(PROPVARIANT);
+
+impl WideStringPropVariant {
+    unsafe fn new(value: &str) -> Option<Self> {
+        let wide = to_wide(value);
+        let bytes = wide.len().checked_mul(size_of::<u16>())?;
+        let ptr = CoTaskMemAlloc(bytes) as *mut u16;
+        if ptr.is_null() {
+            return None;
+        }
+
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
+
+        let mut prop_variant: PROPVARIANT = zeroed();
+        prop_variant.Anonymous.Anonymous.vt = VT_LPWSTR;
+        prop_variant.Anonymous.Anonymous.Anonymous.pwszVal = ptr;
+        Some(Self(prop_variant))
+    }
+}
+
+impl Drop for WideStringPropVariant {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = PropVariantClear(&mut self.0);
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Config {
@@ -112,6 +192,8 @@ struct AppState {
 }
 
 fn main() {
+    let _com_guard = ComGuard::initialize();
+
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         SetCurrentProcessExplicitAppUserModelID(to_wide(APP_USER_MODEL_ID).as_ptr());
@@ -192,7 +274,7 @@ unsafe fn create_hidden_window() -> HWND {
         return null_mut();
     }
 
-    CreateWindowExW(
+    let hwnd = CreateWindowExW(
         0,
         class_name.as_ptr(),
         window_name.as_ptr(),
@@ -205,7 +287,13 @@ unsafe fn create_hidden_window() -> HWND {
         null_mut(),
         GetModuleHandleW(null()),
         null_mut(),
-    )
+    );
+
+    if !hwnd.is_null() {
+        apply_window_identity(hwnd, app_icon);
+    }
+
+    hwnd
 }
 
 unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -446,6 +534,57 @@ unsafe fn add_notification_icon(hwnd: HWND) {
     } else {
         app().tray_uses_version_4.store(false, Ordering::SeqCst);
     }
+}
+
+unsafe fn apply_window_identity(hwnd: HWND, app_icon: *mut c_void) {
+    if !app_icon.is_null() {
+        SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, app_icon as isize);
+        SendMessageW(hwnd, WM_SETICON, ICON_SMALL as usize, app_icon as isize);
+    }
+
+    // Feed shell relaunch metadata so Win11 surfaces the process icon more reliably.
+    let mut property_store: *mut c_void = null_mut();
+    if SHGetPropertyStoreForWindow(hwnd, &IID_PROPERTY_STORE, &mut property_store) < 0 || property_store.is_null() {
+        return;
+    }
+
+    let store = property_store as *mut IPropertyStoreRaw;
+    let mut did_set_property = false;
+
+    did_set_property |= set_window_property_string(store, "System.AppUserModel.ID", APP_USER_MODEL_ID);
+    did_set_property |= set_window_property_string(store, "System.AppUserModel.RelaunchDisplayNameResource", APP_NAME);
+
+    if let Ok(exe_path) = env::current_exe() {
+        let exe_path = exe_path.to_string_lossy().into_owned();
+        let relaunch_command = format!("\"{}\"", exe_path);
+        let relaunch_icon = format!("{},-{}", exe_path, APP_ICON_RESOURCE_ID);
+        did_set_property |= set_window_property_string(store, "System.AppUserModel.RelaunchCommand", &relaunch_command);
+        did_set_property |= set_window_property_string(
+            store,
+            "System.AppUserModel.RelaunchIconResource",
+            &relaunch_icon,
+        );
+    }
+
+    if did_set_property {
+        ((*(*store).lp_vtbl).commit)(property_store);
+    }
+
+    ((*(*store).lp_vtbl).base__.release)(property_store);
+}
+
+unsafe fn set_window_property_string(store: *mut IPropertyStoreRaw, property_name: &str, value: &str) -> bool {
+    let mut property_key: PROPERTYKEY = zeroed();
+    let property_name = to_wide(property_name);
+    if PSGetPropertyKeyFromName(property_name.as_ptr(), &mut property_key) < 0 {
+        return false;
+    }
+
+    let Some(property_value) = WideStringPropVariant::new(value) else {
+        return false;
+    };
+
+    ((*(*store).lp_vtbl).set_value)(store as *mut c_void, &property_key, &property_value.0) >= 0
 }
 
 unsafe fn remove_notification_icon(hwnd: HWND) {

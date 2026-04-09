@@ -9,3 +9,4 @@ local_environment.jai
 # Added by cargo
 
 /target
+/tmp_legacy
