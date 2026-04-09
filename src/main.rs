@@ -24,9 +24,9 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     VK_LWIN, VK_RWIN,
 };
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, ShellExecuteW, APPBARDATA, NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD,
-    NIM_DELETE, NIM_SETFOCUS, NIM_SETVERSION, NIN_SELECT, NOTIFYICONDATAW, ABM_GETSTATE, ABM_SETSTATE,
-    ABS_AUTOHIDE,
+    SetCurrentProcessExplicitAppUserModelID, Shell_NotifyIconW, ShellExecuteW, APPBARDATA, NIF_ICON,
+    NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETFOCUS, NIM_SETVERSION, NIN_SELECT,
+    NOTIFYICONDATAW, ABM_GETSTATE, ABM_SETSTATE, ABS_AUTOHIDE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CallNextHookEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
@@ -44,7 +44,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 const APP_NAME: &str = "Buttery Taskbar";
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-const RELEASES_URL: &str = "https://github.com/LuisThiamNye/ButteryTaskbar2/releases";
+const APP_USER_MODEL_ID: &str = "melody0709.ButteryTaskbar_Rust";
+const RELEASES_URL: &str = "https://github.com/melody0709/ButteryTaskbar_Rust/releases";
 const WINDOW_CLASS_NAME: &str = "BUTTERY_TASKBAR_RS";
 const TRAY_CALLBACK_MESSAGE: u32 = WM_APP + 1;
 const TRAY_ICON_ID: u32 = 1;
@@ -113,6 +114,7 @@ struct AppState {
 fn main() {
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        SetCurrentProcessExplicitAppUserModelID(to_wide(APP_USER_MODEL_ID).as_ptr());
     }
 
     let quoted_exe_path = quoted_exe_path();
@@ -562,7 +564,7 @@ fn update_hooks() {
     let finalizing = app().is_finalizing.load(Ordering::SeqCst);
 
     let should_hook_keyboard = !finalizing && !menu_active && (config.enabled || config.toggle_shortcut_enabled);
-    let should_hook_mouse = !finalizing && !menu_active && config.enabled && config.scroll_activation_enabled;
+    let should_hook_mouse = !finalizing && !menu_active && config.scroll_activation_enabled;
 
     install_or_remove_hook(&app().keyboard_hook, should_hook_keyboard, WH_KEYBOARD_LL, keyboard_hook_proc);
     install_or_remove_hook(&app().mouse_hook, should_hook_mouse, WH_MOUSE_LL, mouse_hook_proc);
@@ -671,7 +673,7 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
 
 fn handle_mouse_scroll(_delta: i16, mouse_x: i32, mouse_y: i32) -> bool {
     let config = current_config();
-    if !config.enabled || !config.scroll_activation_enabled {
+    if !config.scroll_activation_enabled {
         return false;
     }
 
@@ -679,7 +681,7 @@ fn handle_mouse_scroll(_delta: i16, mouse_x: i32, mouse_y: i32) -> bool {
     if mouse_y == rect.bottom - 1
         && mouse_x >= rect.left
         && mouse_x < rect.right
-        && !app().should_show_due_to_focus.load(Ordering::SeqCst)
+        && !should_show_taskbar()
     {
         app().should_show_due_to_focus.store(true, Ordering::SeqCst);
         app().win_key_press_requested.store(true, Ordering::SeqCst);
