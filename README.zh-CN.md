@@ -10,6 +10,8 @@
 
 <img src="assets/icon.webp" width="50%" />
 
+<img src="assets/right.webp" width="50%" />
+
 ## 项目说明
 
 Buttery Taskbar 的目标是比 Windows 自带的自动隐藏更“激进”地隐藏任务栏。只有在真正需要的时候，比如开始菜单、托盘溢出区或其他 Shell 界面激活时，任务栏才会重新出现。

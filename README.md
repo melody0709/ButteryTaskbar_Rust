@@ -9,6 +9,8 @@ The legacy Jai source tree is still included locally under `ButteryTaskbar2_jai/
 
 <img src="assets/icon.webp" width="50%" />
 
+<img src="assets/right.webp" width="50%" />
+
 ## What This Project Is
 
 Buttery Taskbar hides the Windows taskbar more aggressively than the built-in auto-hide mode. The taskbar stays out of the way until it is actually needed, such as when the Start menu, tray overflow, or other shell UI becomes active.
