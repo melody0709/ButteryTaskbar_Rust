@@ -24,8 +24,9 @@ use windows_sys::Win32::System::Variant::VT_LPWSTR;
 use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows_sys::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_CONTROL, VK_F11,
-    VK_LWIN, VK_RWIN,
+    GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_CONTROL,
+    VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
+    VK_SHIFT,
 };
 use windows_sys::Win32::UI::Shell::{
     SetCurrentProcessExplicitAppUserModelID, Shell_NotifyIconW, ShellExecuteW, APPBARDATA, NIF_ICON,
@@ -53,6 +54,8 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const APP_USER_MODEL_ID: &str = "melody0709.ButteryTaskbar_Rust";
 const RELEASES_URL: &str = "https://github.com/melody0709/ButteryTaskbar_Rust/releases";
 const WINDOW_CLASS_NAME: &str = "BUTTERY_TASKBAR_RS";
+const CONFIG_VERSION: u32 = 2;
+const DEFAULT_TOGGLE_SHORTCUT: &str = "Ctrl+Win+F11";
 const TRAY_CALLBACK_MESSAGE: u32 = WM_APP + 1;
 const TRAY_ICON_ID: u32 = 1;
 const APP_ICON_RESOURCE_ID: u16 = 1;
@@ -63,10 +66,11 @@ const IID_PROPERTY_STORE: GUID = GUID::from_u128(0x886d8eeb_8cf2_4446_8d02_cdba1
 
 const CMD_TOGGLE_ENABLED: usize = 1001;
 const CMD_TOGGLE_SHORTCUT: usize = 1002;
-const CMD_TOGGLE_SCROLL: usize = 1003;
-const CMD_TOGGLE_AUTOHIDE: usize = 1004;
-const CMD_TOGGLE_STARTUP: usize = 1005;
-const CMD_OPEN_RELEASES: usize = 1006;
+const CMD_OPEN_SHORTCUT_SETTINGS: usize = 1003;
+const CMD_TOGGLE_SCROLL: usize = 1004;
+const CMD_TOGGLE_AUTOHIDE: usize = 1005;
+const CMD_TOGGLE_STARTUP: usize = 1006;
+const CMD_OPEN_RELEASES: usize = 1007;
 const CMD_QUIT: usize = 1999;
 
 static APP: OnceLock<AppState> = OnceLock::new();
@@ -144,12 +148,125 @@ impl Drop for WideStringPropVariant {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToggleHotkey {
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    win: bool,
+    key_vk: u32,
+    key_name: String,
+}
+
+impl ToggleHotkey {
+    fn parse(value: &str) -> Option<Self> {
+        let mut hotkey = Self {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            win: false,
+            key_vk: 0,
+            key_name: String::new(),
+        };
+        let mut has_key = false;
+
+        for token in value.split('+') {
+            let token = token.trim();
+            if token.is_empty() {
+                return None;
+            }
+
+            match normalize_hotkey_token(token).as_str() {
+                "CTRL" | "CONTROL" | "CTL" => {
+                    if hotkey.ctrl {
+                        return None;
+                    }
+                    hotkey.ctrl = true;
+                }
+                "ALT" => {
+                    if hotkey.alt {
+                        return None;
+                    }
+                    hotkey.alt = true;
+                }
+                "SHIFT" => {
+                    if hotkey.shift {
+                        return None;
+                    }
+                    hotkey.shift = true;
+                }
+                "WIN" | "WINDOWS" | "META" | "SUPER" => {
+                    if hotkey.win {
+                        return None;
+                    }
+                    hotkey.win = true;
+                }
+                _ => {
+                    if has_key {
+                        return None;
+                    }
+
+                    let (key_vk, key_name) = parse_hotkey_key(token)?;
+                    hotkey.key_vk = key_vk;
+                    hotkey.key_name = key_name;
+                    has_key = true;
+                }
+            }
+        }
+
+        if !has_key {
+            return None;
+        }
+
+        Some(hotkey)
+    }
+
+    fn display(&self) -> String {
+        let mut parts = Vec::new();
+        if self.ctrl {
+            parts.push("Ctrl".to_string());
+        }
+        if self.alt {
+            parts.push("Alt".to_string());
+        }
+        if self.shift {
+            parts.push("Shift".to_string());
+        }
+        if self.win {
+            parts.push("Win".to_string());
+        }
+        parts.push(self.key_name.clone());
+        parts.join("+")
+    }
+
+    fn matches_key_down(&self, vk: u32) -> bool {
+        vk == self.key_vk && self.modifiers_match()
+    }
+
+    fn uses_vk(&self, vk: u32) -> bool {
+        vk == self.key_vk
+            || (self.ctrl && is_control_key(vk))
+            || (self.alt && is_alt_key(vk))
+            || (self.shift && is_shift_key(vk))
+            || (self.win && is_win_key(vk))
+    }
+
+    fn modifiers_match(&self) -> bool {
+        (!self.ctrl || key_is_down(VK_CONTROL as i32))
+            && (!self.alt || key_is_down(VK_MENU as i32))
+            && (!self.shift || key_is_down(VK_SHIFT as i32))
+            && (!self.win || key_is_down(VK_LWIN as i32) || key_is_down(VK_RWIN as i32))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Config {
     version: u32,
     enabled: bool,
     scroll_activation_enabled: bool,
     toggle_shortcut_enabled: bool,
+    #[serde(default = "default_toggle_hotkey_string")]
+    toggle_shortcut: String,
     auto_launch_enabled: bool,
     autohide_when_disabled: bool,
 }
@@ -157,14 +274,23 @@ struct Config {
 impl Config {
     fn default_with_system_state() -> Self {
         Self {
-            version: 1,
+            version: CONFIG_VERSION,
             enabled: true,
             scroll_activation_enabled: true,
             toggle_shortcut_enabled: false,
+            toggle_shortcut: default_toggle_hotkey_string(),
             auto_launch_enabled: false,
             autohide_when_disabled: system_taskbar_autohide_enabled(),
         }
     }
+}
+
+fn default_toggle_hotkey_string() -> String {
+    DEFAULT_TOGGLE_SHORTCUT.to_string()
+}
+
+fn default_toggle_hotkey() -> ToggleHotkey {
+    ToggleHotkey::parse(DEFAULT_TOGGLE_SHORTCUT).expect("default toggle shortcut should be valid")
 }
 
 enum TaskbarSignal {
@@ -174,6 +300,7 @@ enum TaskbarSignal {
 
 struct AppState {
     config: Mutex<Config>,
+    toggle_hotkey: Mutex<ToggleHotkey>,
     config_path: PathBuf,
     quoted_exe_path: String,
     main_hwnd: AtomicIsize,
@@ -186,6 +313,7 @@ struct AppState {
     should_show_due_to_focus: AtomicBool,
     should_stay_visible_before: AtomicI64,
     is_win_key_down: AtomicBool,
+    toggle_shortcut_latched: AtomicBool,
     win_key_press_requested: AtomicBool,
     taskbar_created_message: u32,
     taskbar_tx: SyncSender<TaskbarSignal>,
@@ -201,14 +329,16 @@ fn main() {
 
     let quoted_exe_path = quoted_exe_path();
     let config_path = config_path();
-    let mut config = load_config(&config_path);
+    let (mut config, should_persist_config) = load_config(&config_path);
     config.auto_launch_enabled = query_auto_launch_enabled(&quoted_exe_path);
+    let toggle_hotkey = ToggleHotkey::parse(&config.toggle_shortcut).unwrap_or_else(default_toggle_hotkey);
 
     let taskbar_created_message = unsafe { RegisterWindowMessageW(to_wide("TaskbarCreated").as_ptr()) };
     let (taskbar_tx, taskbar_rx) = sync_channel(1);
 
     let _ = APP.set(AppState {
         config: Mutex::new(config),
+        toggle_hotkey: Mutex::new(toggle_hotkey),
         config_path,
         quoted_exe_path,
         main_hwnd: AtomicIsize::new(0),
@@ -221,10 +351,15 @@ fn main() {
         should_show_due_to_focus: AtomicBool::new(true),
         should_stay_visible_before: AtomicI64::new(0),
         is_win_key_down: AtomicBool::new(false),
+        toggle_shortcut_latched: AtomicBool::new(false),
         win_key_press_requested: AtomicBool::new(false),
         taskbar_created_message,
         taskbar_tx,
     });
+
+    if should_persist_config {
+        save_config(&current_config());
+    }
 
     std::thread::spawn(move || taskbar_worker(taskbar_rx));
 
@@ -352,14 +487,16 @@ unsafe fn show_tray_menu(hwnd: HWND, x: i32, y: i32) {
     }
 
     let mut labels: Vec<Vec<u16>> = Vec::new();
+    let toggle_shortcut_label = format!("{} to toggle", current_toggle_hotkey().display());
     append_menu_item(menu, &mut labels, CMD_TOGGLE_ENABLED, "Enabled", config.enabled);
     append_menu_item(
         menu,
         &mut labels,
         CMD_TOGGLE_SHORTCUT,
-        "Ctrl+Win+F11 to toggle",
+        &toggle_shortcut_label,
         config.toggle_shortcut_enabled,
     );
+    append_menu_text(menu, &mut labels, CMD_OPEN_SHORTCUT_SETTINGS, "Edit shortcut settings...");
     append_menu_item(
         menu,
         &mut labels,
@@ -460,6 +597,9 @@ fn handle_menu_command(command: usize) {
             }
             update_hooks();
         }
+        CMD_OPEN_SHORTCUT_SETTINGS => unsafe {
+            open_shortcut_settings();
+        },
         CMD_TOGGLE_SCROLL => {
             {
                 let mut config = lock_config();
@@ -748,10 +888,11 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
                 }
             }
             WM_KEYUP | WM_SYSKEYUP => {
+                handle_key_up(info.vkCode);
                 if info.vkCode == VK_LWIN as u32 || info.vkCode == VK_RWIN as u32 {
                     if current_config().enabled {
                         let other = if info.vkCode == VK_LWIN as u32 { VK_RWIN } else { VK_LWIN };
-                        let other_still_down = (GetKeyState(other as i32) as u16 & 0xF0) > 0;
+                        let other_still_down = key_is_down(other as i32);
                         app().is_win_key_down.store(other_still_down, Ordering::SeqCst);
                         app().should_stay_visible_before.store(current_millis() + 400, Ordering::SeqCst);
                         signal_taskbar_refresh();
@@ -774,28 +915,40 @@ fn handle_key_down(vk: u32) -> bool {
         return false;
     }
 
-    if vk == VK_F11 as i32 {
-        let control = key_is_down(VK_CONTROL as i32);
-        let win = key_is_down(VK_LWIN as i32) || key_is_down(VK_RWIN as i32);
-        if control && win && current_config().toggle_shortcut_enabled {
-            let new_enabled = !current_config().enabled;
-            {
-                let mut config = lock_config();
-                config.enabled = new_enabled;
-                save_config(&config);
-            }
-            if new_enabled {
-                refresh_foreground_state();
-            } else {
-                app().should_show_due_to_focus.store(true, Ordering::SeqCst);
-            }
-            update_hooks();
-            signal_taskbar_refresh();
-            return true;
-        }
+    let config = current_config();
+    if !config.toggle_shortcut_enabled {
+        return false;
     }
 
-    false
+    let hotkey = current_toggle_hotkey();
+    if !hotkey.matches_key_down(vk as u32) {
+        return false;
+    }
+
+    let already_latched = app().toggle_shortcut_latched.swap(true, Ordering::SeqCst);
+    if !already_latched {
+        let new_enabled = !config.enabled;
+        {
+            let mut config = lock_config();
+            config.enabled = new_enabled;
+            save_config(&config);
+        }
+        if new_enabled {
+            refresh_foreground_state();
+        } else {
+            app().should_show_due_to_focus.store(true, Ordering::SeqCst);
+        }
+        update_hooks();
+        signal_taskbar_refresh();
+    }
+
+    true
+}
+
+fn handle_key_up(vk: u32) {
+    if app().toggle_shortcut_latched.load(Ordering::SeqCst) && current_toggle_hotkey().uses_vk(vk) {
+        app().toggle_shortcut_latched.store(false, Ordering::SeqCst);
+    }
 }
 
 unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -990,6 +1143,23 @@ unsafe fn open_releases_page() {
     ShellExecuteW(null_mut(), verb.as_ptr(), url.as_ptr(), null(), null(), SW_SHOWNORMAL);
 }
 
+unsafe fn open_shortcut_settings() {
+    let config = current_config();
+    save_config(&config);
+
+    let verb = to_wide("open");
+    let executable = to_wide("notepad.exe");
+    let parameter = to_wide(&format!("\"{}\"", app().config_path.display()));
+    ShellExecuteW(
+        null_mut(),
+        verb.as_ptr(),
+        executable.as_ptr(),
+        parameter.as_ptr(),
+        null(),
+        SW_SHOWNORMAL,
+    );
+}
+
 fn signal_taskbar_refresh() {
     match app().taskbar_tx.try_send(TaskbarSignal::Refresh) {
         Ok(_) | Err(TrySendError::Full(_)) => {}
@@ -997,22 +1167,33 @@ fn signal_taskbar_refresh() {
     }
 }
 
-fn load_config(path: &PathBuf) -> Config {
+fn load_config(path: &PathBuf) -> (Config, bool) {
     let mut config = Config::default_with_system_state();
+    let mut should_persist = !path.exists();
     if let Ok(data) = fs::read_to_string(path) {
         if let Ok(loaded) = serde_json::from_str::<Config>(&data) {
             config = loaded;
+        } else {
+            should_persist = true;
         }
     }
-    config
+
+    should_persist |= normalize_config(&mut config);
+    (config, should_persist)
 }
 
 fn save_config(config: &Config) {
-    if let Some(parent) = app().config_path.parent() {
+    let mut config_to_write = config.clone();
+    normalize_config(&mut config_to_write);
+    write_config(&app().config_path, &config_to_write);
+}
+
+fn write_config(path: &PathBuf, config: &Config) {
+    if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
     if let Ok(serialized) = serde_json::to_string_pretty(config) {
-        let _ = fs::write(&app().config_path, serialized);
+        let _ = fs::write(path, serialized);
     }
 }
 
@@ -1064,8 +1245,16 @@ fn current_config() -> Config {
     lock_config().clone()
 }
 
+fn current_toggle_hotkey() -> ToggleHotkey {
+    lock_toggle_hotkey().clone()
+}
+
 fn lock_config() -> std::sync::MutexGuard<'static, Config> {
     app().config.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn lock_toggle_hotkey() -> std::sync::MutexGuard<'static, ToggleHotkey> {
+    app().toggle_hotkey.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn lock_handle(handle: &Mutex<isize>) -> std::sync::MutexGuard<'_, isize> {
@@ -1133,6 +1322,92 @@ fn fill_wide_buffer(buffer: &mut [u16], value: &str) {
     buffer[max_len] = 0;
 }
 
+fn normalize_config(config: &mut Config) -> bool {
+    let mut changed = false;
+
+    if config.version != CONFIG_VERSION {
+        config.version = CONFIG_VERSION;
+        changed = true;
+    }
+
+    let normalized_shortcut = ToggleHotkey::parse(&config.toggle_shortcut)
+        .unwrap_or_else(default_toggle_hotkey)
+        .display();
+    if config.toggle_shortcut != normalized_shortcut {
+        config.toggle_shortcut = normalized_shortcut;
+        changed = true;
+    }
+
+    changed
+}
+
+fn normalize_hotkey_token(token: &str) -> String {
+    token
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace() && *character != '_' && *character != '-')
+        .collect::<String>()
+        .to_ascii_uppercase()
+}
+
+fn parse_hotkey_key(token: &str) -> Option<(u32, String)> {
+    let normalized = normalize_hotkey_token(token);
+
+    if normalized.len() == 1 {
+        let character = normalized.chars().next()?;
+        if character.is_ascii_alphabetic() || character.is_ascii_digit() {
+            return Some((character as u32, character.to_string()));
+        }
+    }
+
+    if let Some(function_number) = normalized.strip_prefix('F') {
+        if let Ok(function_number) = function_number.parse::<u32>() {
+            if (1..=24).contains(&function_number) {
+                return Some((0x6F + function_number, format!("F{}", function_number)));
+            }
+        }
+    }
+
+    match normalized.as_str() {
+        "ESC" | "ESCAPE" => Some((0x1B, "Esc".to_string())),
+        "TAB" => Some((0x09, "Tab".to_string())),
+        "SPACE" | "SPACEBAR" => Some((0x20, "Space".to_string())),
+        "ENTER" | "RETURN" => Some((0x0D, "Enter".to_string())),
+        "BACKSPACE" | "BKSP" => Some((0x08, "Backspace".to_string())),
+        "DELETE" | "DEL" => Some((0x2E, "Delete".to_string())),
+        "INSERT" | "INS" => Some((0x2D, "Insert".to_string())),
+        "HOME" => Some((0x24, "Home".to_string())),
+        "END" => Some((0x23, "End".to_string())),
+        "PAGEUP" | "PGUP" | "PRIOR" => Some((0x21, "PageUp".to_string())),
+        "PAGEDOWN" | "PGDN" | "NEXT" => Some((0x22, "PageDown".to_string())),
+        "UP" => Some((0x26, "Up".to_string())),
+        "DOWN" => Some((0x28, "Down".to_string())),
+        "LEFT" => Some((0x25, "Left".to_string())),
+        "RIGHT" => Some((0x27, "Right".to_string())),
+        "PAUSE" | "BREAK" => Some((0x13, "Pause".to_string())),
+        "PRINTSCREEN" | "PRTSC" | "PRTSCN" => Some((0x2C, "PrintScreen".to_string())),
+        "CAPSLOCK" => Some((0x14, "CapsLock".to_string())),
+        "NUMLOCK" => Some((0x90, "NumLock".to_string())),
+        "SCROLLLOCK" => Some((0x91, "ScrollLock".to_string())),
+        _ => None,
+    }
+}
+
+fn is_control_key(vk: u32) -> bool {
+    vk == VK_CONTROL as u32 || vk == VK_LCONTROL as u32 || vk == VK_RCONTROL as u32
+}
+
+fn is_alt_key(vk: u32) -> bool {
+    vk == VK_MENU as u32 || vk == VK_LMENU as u32 || vk == VK_RMENU as u32
+}
+
+fn is_shift_key(vk: u32) -> bool {
+    vk == VK_SHIFT as u32 || vk == VK_LSHIFT as u32 || vk == VK_RSHIFT as u32
+}
+
+fn is_win_key(vk: u32) -> bool {
+    vk == VK_LWIN as u32 || vk == VK_RWIN as u32
+}
+
 fn to_wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -1150,5 +1425,36 @@ fn hiword(value: u32) -> u32 {
 }
 
 fn key_is_down(vk: i32) -> bool {
-    unsafe { (GetKeyState(vk) as u16 & 0xF0) > 0 }
+    unsafe { (GetKeyState(vk) as u16 & 0x8000) != 0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_default_toggle_hotkey() {
+        let hotkey = ToggleHotkey::parse("ctrl + win + f11").expect("expected the default hotkey to parse");
+        assert_eq!(hotkey.display(), "Ctrl+Win+F11");
+        assert!(hotkey.ctrl);
+        assert!(hotkey.win);
+        assert_eq!(hotkey.key_vk, 0x7A);
+    }
+
+    #[test]
+    fn canonicalizes_navigation_key_aliases() {
+        let hotkey = ToggleHotkey::parse("win + pgdn").expect("expected the alias to parse");
+        assert_eq!(hotkey.display(), "Win+PageDown");
+        assert_eq!(hotkey.key_vk, 0x22);
+    }
+
+    #[test]
+    fn rejects_modifier_only_hotkeys() {
+        assert!(ToggleHotkey::parse("Ctrl+Win").is_none());
+    }
+
+    #[test]
+    fn rejects_duplicate_modifiers() {
+        assert!(ToggleHotkey::parse("Ctrl+Ctrl+B").is_none());
+    }
 }
