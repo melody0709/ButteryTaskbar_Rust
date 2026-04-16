@@ -1,4 +1,4 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use std::fs;
 use std::mem::{size_of, zeroed};
 use std::path::PathBuf;
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Mutex, OnceLock};
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
@@ -24,7 +24,7 @@ use windows_sys::Win32::System::Variant::VT_LPWSTR;
 use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows_sys::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_CONTROL, VK_F11,
+    GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_CONTROL,
     VK_LWIN, VK_RWIN,
 };
 use windows_sys::Win32::UI::Shell::{
@@ -33,20 +33,39 @@ use windows_sys::Win32::UI::Shell::{
     NOTIFYICONDATAW, ABM_GETSTATE, ABM_SETSTATE, ABS_AUTOHIDE,
 };
 use windows_sys::Win32::UI::Shell::PropertiesSystem::{PSGetPropertyKeyFromName, SHGetPropertyStoreForWindow};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CallNextHookEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     DispatchMessageW, FindWindowExW, FindWindowW, GetClassNameW, GetCursorPos, GetForegroundWindow, GetMessageW,
     EVENT_SYSTEM_FOREGROUND, HHOOK, ICON_BIG, ICON_SMALL, IDC_ARROW, IDI_APPLICATION, IMAGE_ICON,
     IsWindowVisible,
     KBDLLHOOKSTRUCT, LR_DEFAULTSIZE, LR_SHARED, LoadCursorW, LoadIconW, LoadImageW, MF_CHECKED,
-    MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MSLLHOOKSTRUCT, MSG, PostMessageW, PostQuitMessage,
+    MF_GRAYED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MSLLHOOKSTRUCT, MSG, PostMessageW, PostQuitMessage,
     RegisterClassExW, RegisterWindowMessageW, SendMessageW, SetForegroundWindow, SetWindowsHookExW, ShowWindow,
     TPM_BOTTOMALIGN, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu,
     TranslateMessage, UnhookWindowsHookEx, WNDCLASSEXW, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_CONTEXTMENU,
-    WM_CREATE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP, WM_MOUSEWHEEL, WM_NULL, WM_RBUTTONDOWN,
+    WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NULL, WM_PAINT, WM_RBUTTONDOWN,
     WM_RBUTTONUP, WM_SETICON, WM_SYSKEYDOWN, WM_SYSKEYUP, SW_HIDE, SW_SHOWNOACTIVATE, SW_SHOWNORMAL,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_HOTKEY,
+    DialogBoxIndirectParamW, DLGTEMPLATE, DS_CENTER, DS_MODALFRAME, DS_SETFONT, EndDialog,
+    GetDlgItem, MapDialogRect, WS_CAPTION, WS_CHILD, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    GWLP_USERDATA, MB_ICONWARNING, MB_OK, MessageBoxW, GetClientRect, GetWindowRect,
+    MoveWindow, WM_CLOSE, WM_COMMAND, WM_GETFONT, WM_INITDIALOG, WM_NCCREATE, WM_NCDESTROY,
+    SetWindowLongPtrW, GetWindowLongPtrW, WM_SETFOCUS, WM_KILLFOCUS,
 };
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, MapVirtualKeyW, MAPVK_VK_TO_CHAR,
+    VK_BACK, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F11, VK_HOME, VK_INSERT, VK_LCONTROL, VK_LEFT, VK_LMENU,
+    VK_LSHIFT, VK_MENU, VK_NEXT, VK_PRIOR, VK_RCONTROL, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_SHIFT, VK_SPACE,
+    VK_TAB, VK_UP, VK_RETURN, VK_F1, VK_F24,
+};
+use windows_sys::Win32::Graphics::Gdi::{
+    BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect, SetBkColor,
+    SetTextColor, COLOR_WINDOW, COLOR_WINDOWFRAME, COLOR_WINDOWTEXT, DT_LEFT, DT_SINGLELINE, DT_VCENTER,
+    PAINTSTRUCT, GetSysColor,
+};
+use windows_sys::Win32::Foundation::GetLastError;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
 
 const APP_NAME: &str = "Buttery Taskbar";
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -55,19 +74,24 @@ const RELEASES_URL: &str = "https://github.com/melody0709/ButteryTaskbar_Rust/re
 const WINDOW_CLASS_NAME: &str = "BUTTERY_TASKBAR_RS";
 const TRAY_CALLBACK_MESSAGE: u32 = WM_APP + 1;
 const TRAY_ICON_ID: u32 = 1;
-const APP_ICON_RESOURCE_ID: u16 = 1;
+const APP_ICON_RESOURCE_ID: u16 = 32512;
 const NOTIFYICON_VERSION_4_VALUE: u32 = 4;
 const NINF_KEY: u32 = 1;
 const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
 const IID_PROPERTY_STORE: GUID = GUID::from_u128(0x886d8eeb_8cf2_4446_8d02_cdba1dbdcf99);
 
 const CMD_TOGGLE_ENABLED: usize = 1001;
-const CMD_TOGGLE_SHORTCUT: usize = 1002;
+const CMD_SETTINGS: usize = 1002;
 const CMD_TOGGLE_SCROLL: usize = 1003;
 const CMD_TOGGLE_AUTOHIDE: usize = 1004;
 const CMD_TOGGLE_STARTUP: usize = 1005;
 const CMD_OPEN_RELEASES: usize = 1006;
 const CMD_QUIT: usize = 1999;
+
+const WM_SETFONT: u32 = 0x0030;
+const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
+
+const HOTKEY_ID_TOGGLE: i32 = 1;
 
 static APP: OnceLock<AppState> = OnceLock::new();
 
@@ -144,12 +168,69 @@ impl Drop for WideStringPropVariant {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HotkeyConfig {
+    pub win: bool,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub key: u32,
+}
+
+impl Default for HotkeyConfig {
+    fn default() -> Self {
+        Self {
+            win: false,
+            ctrl: false,
+            shift: false,
+            alt: false,
+            key: 0,
+        }
+    }
+}
+
+impl HotkeyConfig {
+    pub fn is_empty(&self) -> bool {
+        self.key == 0
+    }
+
+    pub fn default_toggle() -> Self {
+        Self {
+            win: true,
+            ctrl: true,
+            shift: false,
+            alt: false,
+            key: VK_F11 as u32,
+        }
+    }
+
+    pub fn modifiers(&self) -> u32 {
+        let mut mod_flags = 0;
+        if self.win {
+            mod_flags |= windows_sys::Win32::UI::Input::KeyboardAndMouse::MOD_WIN;
+        }
+        if self.ctrl {
+            mod_flags |= windows_sys::Win32::UI::Input::KeyboardAndMouse::MOD_CONTROL;
+        }
+        if self.shift {
+            mod_flags |= windows_sys::Win32::UI::Input::KeyboardAndMouse::MOD_SHIFT;
+        }
+        if self.alt {
+            mod_flags |= windows_sys::Win32::UI::Input::KeyboardAndMouse::MOD_ALT;
+        }
+        // Always append MOD_NOREPEAT to prevent holding down from triggering repeatedly
+        mod_flags |= windows_sys::Win32::UI::Input::KeyboardAndMouse::MOD_NOREPEAT;
+        mod_flags
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Config {
     version: u32,
     enabled: bool,
     scroll_activation_enabled: bool,
-    toggle_shortcut_enabled: bool,
+    #[serde(default)]
+    toggle_shortcut: HotkeyConfig,
     auto_launch_enabled: bool,
     autohide_when_disabled: bool,
 }
@@ -160,7 +241,7 @@ impl Config {
             version: 1,
             enabled: true,
             scroll_activation_enabled: true,
-            toggle_shortcut_enabled: false,
+            toggle_shortcut: HotkeyConfig::default_toggle(),
             auto_launch_enabled: false,
             autohide_when_disabled: system_taskbar_autohide_enabled(),
         }
@@ -184,7 +265,7 @@ struct AppState {
     menu_active: AtomicBool,
     is_finalizing: AtomicBool,
     should_show_due_to_focus: AtomicBool,
-    should_stay_visible_before: AtomicI64,
+    should_stay_visible_before: AtomicU64,
     is_win_key_down: AtomicBool,
     win_key_press_requested: AtomicBool,
     taskbar_created_message: u32,
@@ -219,7 +300,7 @@ fn main() {
         menu_active: AtomicBool::new(false),
         is_finalizing: AtomicBool::new(false),
         should_show_due_to_focus: AtomicBool::new(true),
-        should_stay_visible_before: AtomicI64::new(0),
+        should_stay_visible_before: AtomicU64::new(0),
         is_win_key_down: AtomicBool::new(false),
         win_key_press_requested: AtomicBool::new(false),
         taskbar_created_message,
@@ -300,9 +381,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
     match msg {
         WM_CREATE => {
             add_notification_icon(hwnd);
+            register_hotkeys(hwnd);
             0
         }
         WM_DESTROY => {
+            unsafe { UnregisterHotKey(hwnd, HOTKEY_ID_TOGGLE); }
             cleanup_on_destroy(hwnd);
             PostQuitMessage(0);
             0
@@ -311,11 +394,64 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
             handle_tray_callback(hwnd, wparam, lparam);
             0
         }
+        _ if msg == WM_APP + 2 => {
+            HOTKEY_EDIT_CLASS_REGISTERED.get_or_init(|| register_hotkey_edit_class());
+
+            let mut state = HotkeyEditState {
+                hotkey: current_config().toggle_shortcut,
+                original: HotkeyConfig::default(),
+                capturing: false,
+            };
+
+            let template = create_settings_dialog_template();
+
+            DialogBoxIndirectParamW(
+                GetModuleHandleW(null()),
+                template.as_ptr() as *const DLGTEMPLATE,
+                hwnd,
+                Some(settings_dialog_proc),
+                &mut state as *mut _ as LPARAM,
+            );
+            0
+        }
         _ if msg == app().taskbar_created_message => {
             add_notification_icon(hwnd);
             0
         }
+        WM_HOTKEY => {
+            if wparam == HOTKEY_ID_TOGGLE as usize {
+                let new_value = {
+                    let mut config = lock_config();
+                    config.enabled = !config.enabled;
+                    save_config(&config);
+                    config.enabled
+                };
+                if new_value {
+                    refresh_foreground_state();
+                } else {
+                    app().should_show_due_to_focus.store(true, Ordering::SeqCst);
+                }
+                update_hooks();
+                signal_taskbar_refresh();
+            }
+            0
+        }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+fn register_hotkeys(hwnd: HWND) {
+    let config = current_config();
+    unsafe {
+        UnregisterHotKey(hwnd, HOTKEY_ID_TOGGLE);
+        if !config.toggle_shortcut.is_empty() {
+            RegisterHotKey(
+                hwnd,
+                HOTKEY_ID_TOGGLE,
+                config.toggle_shortcut.modifiers(),
+                config.toggle_shortcut.key,
+            );
+        }
     }
 }
 
@@ -353,25 +489,19 @@ unsafe fn show_tray_menu(hwnd: HWND, x: i32, y: i32) {
 
     let mut labels: Vec<Vec<u16>> = Vec::new();
     append_menu_item(menu, &mut labels, CMD_TOGGLE_ENABLED, "Enabled", config.enabled);
-    append_menu_item(
-        menu,
-        &mut labels,
-        CMD_TOGGLE_SHORTCUT,
-        "Ctrl+Win+F11 to toggle",
-        config.toggle_shortcut_enabled,
-    );
+    append_menu_text(menu, &mut labels, CMD_SETTINGS, "Settings...");
     append_menu_item(
         menu,
         &mut labels,
         CMD_TOGGLE_SCROLL,
-        "Scroll to reveal taskbar",
+        "Scroll to open Start",
         config.scroll_activation_enabled,
     );
     append_menu_item(
         menu,
         &mut labels,
         CMD_TOGGLE_AUTOHIDE,
-        "Auto-hide when disabled",
+        "Keep auto-hide when disabled",
         config.autohide_when_disabled,
     );
     append_menu_item(
@@ -384,6 +514,12 @@ unsafe fn show_tray_menu(hwnd: HWND, x: i32, y: i32) {
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
     append_menu_text(menu, &mut labels, CMD_OPEN_RELEASES, "Open releases page");
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
+    let version_label = format!("buttery-taskbar_v{}", APP_VERSION);
+    {
+        let wide = to_wide(&version_label);
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, wide.as_ptr());
+        labels.push(wide);
+    }
     append_menu_text(menu, &mut labels, CMD_QUIT, "Quit");
 
     let rect = monitor_work_area_from_point(x, y);
@@ -452,14 +588,9 @@ fn handle_menu_command(command: usize) {
             update_hooks();
             signal_taskbar_refresh();
         }
-        CMD_TOGGLE_SHORTCUT => {
-            {
-                let mut config = lock_config();
-                config.toggle_shortcut_enabled = !config.toggle_shortcut_enabled;
-                save_config(&config);
-            }
-            update_hooks();
-        }
+        CMD_SETTINGS => unsafe {
+            show_settings_dialog();
+        },
         CMD_TOGGLE_SCROLL => {
             {
                 let mut config = lock_config();
@@ -702,7 +833,7 @@ fn update_hooks() {
     let menu_active = app().menu_active.load(Ordering::SeqCst);
     let finalizing = app().is_finalizing.load(Ordering::SeqCst);
 
-    let should_hook_keyboard = !finalizing && !menu_active && (config.enabled || config.toggle_shortcut_enabled);
+    let should_hook_keyboard = !finalizing && !menu_active && config.enabled;
     let should_hook_mouse = !finalizing && !menu_active && config.scroll_activation_enabled;
 
     install_or_remove_hook(&app().keyboard_hook, should_hook_keyboard, WH_KEYBOARD_LL, keyboard_hook_proc);
@@ -743,9 +874,7 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
         let info = &*(lparam as *const KBDLLHOOKSTRUCT);
         match wparam as u32 {
             WM_KEYDOWN | WM_SYSKEYDOWN => {
-                if handle_key_down(info.vkCode) {
-                    return 1;
-                }
+                handle_key_down(info.vkCode);
             }
             WM_KEYUP | WM_SYSKEYUP => {
                 if info.vkCode == VK_LWIN as u32 || info.vkCode == VK_RWIN as u32 {
@@ -765,49 +894,49 @@ unsafe extern "system" fn keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: 
     CallNextHookEx(null_mut(), code, wparam, lparam)
 }
 
-fn handle_key_down(vk: u32) -> bool {
+fn handle_key_down(vk: u32) {
     let vk = vk as i32;
     if vk == VK_LWIN as i32 || vk == VK_RWIN as i32 {
         if current_config().enabled && !app().is_win_key_down.swap(true, Ordering::SeqCst) {
             signal_taskbar_refresh();
         }
-        return false;
     }
-
-    if vk == VK_F11 as i32 {
-        let control = key_is_down(VK_CONTROL as i32);
-        let win = key_is_down(VK_LWIN as i32) || key_is_down(VK_RWIN as i32);
-        if control && win && current_config().toggle_shortcut_enabled {
-            let new_enabled = !current_config().enabled;
-            {
-                let mut config = lock_config();
-                config.enabled = new_enabled;
-                save_config(&config);
-            }
-            if new_enabled {
-                refresh_foreground_state();
-            } else {
-                app().should_show_due_to_focus.store(true, Ordering::SeqCst);
-            }
-            update_hooks();
-            signal_taskbar_refresh();
-            return true;
-        }
-    }
-
-    false
 }
 
 unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 && wparam as u32 == WM_MOUSEWHEEL {
+    if code >= 0 {
+        let msg = wparam as u32;
         let info = &*(lparam as *const MSLLHOOKSTRUCT);
-        let delta = hiword(info.mouseData) as i16;
-        if handle_mouse_scroll(delta, info.pt.x, info.pt.y) {
-            return 1;
+        let (mouse_x, mouse_y) = (info.pt.x, info.pt.y);
+
+        if msg == WM_MOUSEMOVE {
+            handle_mouse_move(mouse_x, mouse_y);
+        } else if msg == WM_MOUSEWHEEL {
+            let delta = hiword(info.mouseData) as i16;
+            if handle_mouse_scroll(delta, mouse_x, mouse_y) {
+                return 1;
+            }
         }
     }
 
     CallNextHookEx(null_mut(), code, wparam, lparam)
+}
+
+fn handle_mouse_move(mouse_x: i32, mouse_y: i32) {
+    if !current_config().scroll_activation_enabled {
+        return;
+    }
+
+    let monitor = primary_monitor_rect();
+    if mouse_y >= monitor.bottom - 2
+        && mouse_y < monitor.bottom
+        && mouse_x >= monitor.left
+        && mouse_x < monitor.right
+        && !should_show_taskbar()
+    {
+        app().should_show_due_to_focus.store(true, Ordering::SeqCst);
+        signal_taskbar_refresh();
+    }
 }
 
 fn handle_mouse_scroll(_delta: i16, mouse_x: i32, mouse_y: i32) -> bool {
@@ -816,13 +945,12 @@ fn handle_mouse_scroll(_delta: i16, mouse_x: i32, mouse_y: i32) -> bool {
         return false;
     }
 
-    let rect = primary_monitor_work_area();
-    if mouse_y == rect.bottom - 1
-        && mouse_x >= rect.left
-        && mouse_x < rect.right
-        && !should_show_taskbar()
+    let monitor = primary_monitor_rect();
+    if mouse_y >= monitor.bottom - 2
+        && mouse_y < monitor.bottom
+        && mouse_x >= monitor.left
+        && mouse_x < monitor.right
     {
-        app().should_show_due_to_focus.store(true, Ordering::SeqCst);
         app().win_key_press_requested.store(true, Ordering::SeqCst);
         signal_taskbar_refresh();
         return true;
@@ -882,6 +1010,7 @@ fn apply_taskbar_state(rx: &Receiver<TaskbarSignal>) -> bool {
         }
 
         let should_show = should_show_taskbar();
+
         let mut failed = false;
         for hwnd in &taskbars {
             unsafe {
@@ -1072,8 +1201,8 @@ fn lock_handle(handle: &Mutex<isize>) -> std::sync::MutexGuard<'_, isize> {
     handle.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn current_millis() -> i64 {
-    unsafe { GetTickCount64() as i64 }
+fn current_millis() -> u64 {
+    unsafe { GetTickCount64() }
 }
 
 fn system_taskbar_autohide_enabled() -> bool {
@@ -1083,8 +1212,14 @@ fn system_taskbar_autohide_enabled() -> bool {
     (state & ABS_AUTOHIDE as usize) != 0
 }
 
-fn primary_monitor_work_area() -> RECT {
-    monitor_work_area_from_point(0, 0)
+fn primary_monitor_rect() -> RECT {
+    let mut info: MONITORINFO = unsafe { zeroed() };
+    info.cbSize = size_of::<MONITORINFO>() as u32;
+    unsafe {
+        let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        GetMonitorInfoW(monitor, &mut info);
+    }
+    info.rcMonitor
 }
 
 fn monitor_work_area_from_point(x: i32, y: i32) -> RECT {
@@ -1149,6 +1284,458 @@ fn hiword(value: u32) -> u32 {
     (value >> 16) & 0xffff
 }
 
-fn key_is_down(vk: i32) -> bool {
-    unsafe { (GetKeyState(vk) as u16 & 0xF0) > 0 }
+const IDC_TOGGLE_HOTKEY_EDIT: i32 = 101;
+const IDC_TOGGLE_HOTKEY_CLEAR: i32 = 102;
+const IDC_OK: i32 = IDOK as i32;
+const IDC_CANCEL: i32 = IDCANCEL as i32;
+
+const IDOK: usize = 1;
+const IDCANCEL: usize = 2;
+const DS_SHELLFONT: u32 = (DS_SETFONT | 0x0008 | 0x0010) as u32;
+
+#[inline]
+fn rgb(r: u8, g: u8, b: u8) -> u32 {
+    (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
+}
+
+struct HotkeyEditState {
+    hotkey: HotkeyConfig,
+    original: HotkeyConfig,
+    capturing: bool,
+}
+
+const HOTKEY_EDIT_CLASS_NAME: &str = "Buttery.HotkeyEdit";
+
+static HOTKEY_EDIT_CLASS_REGISTERED: OnceLock<()> = OnceLock::new();
+
+fn register_hotkey_edit_class() {
+    unsafe {
+        let class_name = to_wide(HOTKEY_EDIT_CLASS_NAME);
+        let mut wc: WNDCLASSEXW = zeroed();
+        wc.cbSize = size_of::<WNDCLASSEXW>() as u32;
+        wc.style = 0; // CS_HREDRAW | CS_VREDRAW not needed since we invalidate on change
+        wc.lpfnWndProc = Some(hotkey_edit_proc);
+        wc.hInstance = GetModuleHandleW(null());
+        wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
+        wc.hbrBackground = (COLOR_WINDOW + 1) as *mut c_void;
+        wc.lpszClassName = class_name.as_ptr();
+
+        RegisterClassExW(&wc);
+    }
+}
+
+unsafe extern "system" fn hotkey_edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    match msg {
+        WM_NCCREATE => {
+            let create_struct = lparam as *const windows_sys::Win32::UI::WindowsAndMessaging::CREATESTRUCTW;
+            if let Some(create_struct) = create_struct.as_ref() {
+                let state_ptr = create_struct.lpCreateParams as *mut HotkeyEditState;
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_NCDESTROY => {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_SETFOCUS => {
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HotkeyEditState;
+            if let Some(state) = state_ptr.as_mut() {
+                state.capturing = true;
+                state.original = state.hotkey.clone();
+                invalidate_hotkey_edit(hwnd);
+            }
+            0
+        }
+        WM_KILLFOCUS => {
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HotkeyEditState;
+            if let Some(state) = state_ptr.as_mut() {
+                state.capturing = false;
+                invalidate_hotkey_edit(hwnd);
+            }
+            0
+        }
+        WM_LBUTTONDOWN => {
+            unsafe { SetFocus(hwnd); }
+            0
+        }
+        WM_ERASEBKGND => {
+            1
+        }
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HotkeyEditState;
+            if state_ptr.is_null() {
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
+            let state = &mut *state_ptr;
+
+            let vk = wparam as u32;
+
+            if vk == VK_ESCAPE as u32 {
+                state.hotkey = state.original.clone();
+                state.capturing = false;
+                invalidate_hotkey_edit(hwnd);
+                SetFocus(GetParent(hwnd));
+                return 0;
+            }
+
+            if vk == VK_BACK as u32 || vk == VK_DELETE as u32 {
+                state.hotkey = HotkeyConfig::default();
+                invalidate_hotkey_edit(hwnd);
+                return 0;
+            }
+
+            if is_modifier_vk(vk) {
+                return 0;
+            }
+
+            let mut hk = HotkeyConfig::default();
+            hk.ctrl = (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0;
+            hk.alt = (GetAsyncKeyState(VK_MENU as i32) as u16 & 0x8000) != 0;
+            hk.shift = (GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0;
+            hk.win = (GetAsyncKeyState(VK_LWIN as i32) as u16 & 0x8000) != 0
+                || (GetAsyncKeyState(VK_RWIN as i32) as u16 & 0x8000) != 0;
+
+            let char_vk = MapVirtualKeyW(vk, MAPVK_VK_TO_CHAR);
+            if char_vk != 0 {
+                hk.key = char_vk & 0xFF;
+                if hk.key >= 'a' as u32 && hk.key <= 'z' as u32 {
+                    hk.key -= 32;
+                }
+            } else {
+                hk.key = vk;
+            }
+
+            if !hk.ctrl && !hk.alt && !hk.shift && !hk.win {
+                hk.alt = true;
+            }
+
+            state.hotkey = hk;
+            invalidate_hotkey_edit(hwnd);
+            0
+        }
+        WM_PAINT => {
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HotkeyEditState;
+            let mut ps: PAINTSTRUCT = zeroed();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            
+            let mut rc: RECT = zeroed();
+            GetClientRect(hwnd, &mut rc);
+
+            let mut is_capturing = false;
+            let mut hotkey_clone = HotkeyConfig::default();
+            
+            if let Some(state) = state_ptr.as_ref() {
+                is_capturing = state.capturing;
+                hotkey_clone = state.hotkey.clone();
+            }
+
+            let bg_color = if is_capturing {
+                rgb(255, 255, 220)
+            } else {
+                GetSysColor(COLOR_WINDOW)
+            };
+            
+            let bg_brush = CreateSolidBrush(bg_color);
+            FillRect(hdc, &rc, bg_brush);
+            DeleteObject(bg_brush as *mut c_void);
+
+            let border_brush = CreateSolidBrush(GetSysColor(COLOR_WINDOWFRAME));
+            FrameRect(hdc, &rc, border_brush);
+            DeleteObject(border_brush as *mut c_void);
+
+            let text = if is_capturing && hotkey_clone.is_empty() {
+                "Press shortcut...".to_string()
+            } else {
+                hotkey_clone.to_display_string()
+            };
+
+            let mut text_wide = to_wide(&text);
+            SetBkColor(hdc, bg_color);
+            SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT));
+
+            // padding
+            rc.left += 4;
+            rc.right -= 4;
+
+            DrawTextW(
+                hdc,
+                text_wide.as_mut_ptr(),
+                -1,
+                &mut rc,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+            );
+
+            EndPaint(hwnd, &ps);
+            0
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+fn invalidate_hotkey_edit(hwnd: HWND) {
+    unsafe {
+        windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, null(), 1);
+    }
+}
+
+#[allow(non_snake_case)]
+fn GetParent(hwnd: HWND) -> HWND {
+    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetAncestor(hwnd, windows_sys::Win32::UI::WindowsAndMessaging::GA_PARENT) }
+}
+
+fn is_modifier_vk(vk: u32) -> bool {
+    let v = vk as u16;
+    matches!(v,
+        VK_CONTROL | VK_LCONTROL | VK_RCONTROL |
+        VK_MENU | VK_LMENU | VK_RMENU |
+        VK_SHIFT | VK_LSHIFT | VK_RSHIFT |
+        VK_LWIN | VK_RWIN)
+}
+
+impl HotkeyConfig {
+    fn to_display_string(&self) -> String {
+        if self.is_empty() {
+            return "(None)".to_string();
+        }
+
+        let mut parts = Vec::new();
+        if self.ctrl {
+            parts.push("Ctrl");
+        }
+        if self.alt {
+            parts.push("Alt");
+        }
+        if self.shift {
+            parts.push("Shift");
+        }
+        if self.win {
+            parts.push("Win");
+        }
+
+        let key_str = vk_to_string(self.key);
+        parts.push(&key_str);
+
+        parts.join(" + ")
+    }
+}
+
+fn vk_to_string(vk: u32) -> String {
+    if vk >= 'A' as u32 && vk <= 'Z' as u32 {
+        return (vk as u8 as char).to_string();
+    }
+    if vk >= '0' as u32 && vk <= '9' as u32 {
+        return (vk as u8 as char).to_string();
+    }
+    if vk >= VK_F1 as u32 && vk <= VK_F24 as u32 {
+        return format!("F{}", vk - VK_F1 as u32 + 1);
+    }
+    match vk as u16 {
+        VK_SPACE => "Space".to_string(),
+        VK_TAB => "Tab".to_string(),
+        VK_RETURN => "Enter".to_string(),
+        VK_ESCAPE => "Esc".to_string(),
+        VK_BACK => "Backspace".to_string(),
+        VK_DELETE => "Delete".to_string(),
+        VK_INSERT => "Insert".to_string(),
+        VK_HOME => "Home".to_string(),
+        VK_END => "End".to_string(),
+        VK_PRIOR => "Page Up".to_string(),
+        VK_NEXT => "Page Down".to_string(),
+        VK_LEFT => "Left".to_string(),
+        VK_UP => "Up".to_string(),
+        VK_RIGHT => "Right".to_string(),
+        VK_DOWN => "Down".to_string(),
+        _ => format!("0x{:02X}", vk),
+    }
+}
+
+unsafe fn show_settings_dialog() {
+    let hwnd = app().main_hwnd.load(Ordering::SeqCst) as HWND;
+    if !hwnd.is_null() {
+        // Must use PostMessage to return from the tray menu TrackPopupMenu modal loop quickly,
+        // otherwise the dialog may block or fail to open.
+        PostMessageW(hwnd, WM_APP + 2, 0, 0);
+    }
+}
+
+unsafe extern "system" fn settings_dialog_proc(hwnd: HWND, msg: u32, wparam: WPARAM, _lparam: LPARAM) -> isize {
+    match msg {
+        WM_INITDIALOG => {
+            let state_ptr = _lparam as *mut HotkeyEditState;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+
+            let edit_hwnd = CreateWindowExW(
+                0,
+                to_wide(HOTKEY_EDIT_CLASS_NAME).as_ptr(),
+                to_wide("").as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                0, 0, 0, 0,
+                hwnd,
+                IDC_TOGGLE_HOTKEY_EDIT as isize as *mut _,
+                GetModuleHandleW(null()),
+                state_ptr as *mut _,
+            );
+
+            let font = SendMessageW(hwnd, WM_GETFONT, 0, 0);
+            SendMessageW(edit_hwnd, WM_SETFONT, font as usize, 1);
+
+            let clear_hwnd = GetDlgItem(hwnd, IDC_TOGGLE_HOTKEY_CLEAR);
+            let mut clear_rc: RECT = zeroed();
+            GetWindowRect(clear_hwnd, &mut clear_rc);
+            
+            let mut pts = [
+                POINT { x: clear_rc.left, y: clear_rc.top },
+                POINT { x: clear_rc.right, y: clear_rc.bottom },
+            ];
+            windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pts[0]);
+            windows_sys::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pts[1]);
+            
+            let mut dlg_rect = RECT { left: 100, top: 0, right: 0, bottom: 0 };
+            MapDialogRect(hwnd, &mut dlg_rect);
+
+            let edit_x = dlg_rect.left;
+            let edit_w = pts[0].x - edit_x - 4;
+            let edit_y = pts[0].y;
+            let edit_h = pts[1].y - pts[0].y;
+
+            MoveWindow(edit_hwnd, edit_x, edit_y, edit_w, edit_h, 1);
+
+            1
+        }
+        WM_COMMAND => {
+            let id = loword(wparam as u32) as i32;
+            if id == IDC_TOGGLE_HOTKEY_CLEAR {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HotkeyEditState;
+                if let Some(state) = state_ptr.as_mut() {
+                    state.hotkey = HotkeyConfig::default();
+                    invalidate_hotkey_edit(GetDlgItem(hwnd, IDC_TOGGLE_HOTKEY_EDIT));
+                }
+            } else if id == IDC_OK {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HotkeyEditState;
+                if let Some(state) = state_ptr.as_ref() {
+                    let new_hotkey = state.hotkey.clone();
+                    {
+                        let mut config = lock_config();
+                        config.toggle_shortcut = new_hotkey.clone();
+                        save_config(&config);
+                    }
+
+                    let main_hwnd = app().main_hwnd.load(Ordering::SeqCst) as HWND;
+
+                    if !new_hotkey.is_empty() {
+                        unsafe {
+                            UnregisterHotKey(main_hwnd, HOTKEY_ID_TOGGLE);
+                            if RegisterHotKey(
+                                main_hwnd,
+                                HOTKEY_ID_TOGGLE,
+                                new_hotkey.modifiers(),
+                                new_hotkey.key,
+                            ) == 0 {
+                                if GetLastError() == ERROR_HOTKEY_ALREADY_REGISTERED {
+                                    MessageBoxW(
+                                        hwnd,
+                                        to_wide("This shortcut is already in use by another program.").as_ptr(),
+                                        to_wide("Shortcut Conflict").as_ptr(),
+                                        MB_ICONWARNING | MB_OK,
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        unsafe { UnregisterHotKey(main_hwnd, HOTKEY_ID_TOGGLE); }
+                    }
+
+                    update_hooks();
+                }
+                EndDialog(hwnd, 1);
+            } else if id == IDC_CANCEL {
+                EndDialog(hwnd, 0);
+            }
+            1
+        }
+        WM_CLOSE => {
+            EndDialog(hwnd, 0);
+            1
+        }
+        _ => 0,
+    }
+}
+
+fn create_settings_dialog_template() -> Vec<u8> {
+    let mut buffer = Vec::<u8>::new();
+    
+    fn write_u16(buffer: &mut Vec<u8>, val: u16) {
+        buffer.extend_from_slice(&val.to_le_bytes());
+    }
+    
+    fn write_u32(buffer: &mut Vec<u8>, val: u32) {
+        buffer.extend_from_slice(&val.to_le_bytes());
+    }
+    
+    fn align_dword(buffer: &mut Vec<u8>) {
+        while buffer.len() % 4 != 0 {
+            buffer.push(0);
+        }
+    }
+
+    fn write_item(
+        buffer: &mut Vec<u8>,
+        style: u32,
+        ex_style: u32,
+        x: u16, y: u16, cx: u16, cy: u16,
+        id: u16,
+        class_atom: u16,
+        title: &[u16],
+    ) {
+        align_dword(buffer);
+        write_u32(buffer, style);
+        write_u32(buffer, ex_style);
+        write_u16(buffer, x);
+        write_u16(buffer, y);
+        write_u16(buffer, cx);
+        write_u16(buffer, cy);
+        write_u16(buffer, id);
+        write_u16(buffer, 0xFFFF);
+        write_u16(buffer, class_atom);
+        for &ch in title { write_u16(buffer, ch); }
+        write_u16(buffer, 0); // cbCreateData
+    }
+
+    let style = DS_CENTER as u32 | DS_MODALFRAME as u32 | DS_SHELLFONT as u32 | WS_CAPTION as u32 | WS_VISIBLE as u32 | WS_SYSMENU as u32;
+    write_u32(&mut buffer, style);
+    write_u32(&mut buffer, 0); // dwExtendedStyle
+    write_u16(&mut buffer, 4); // cdit
+    write_u16(&mut buffer, 0); // x
+    write_u16(&mut buffer, 0); // y
+    write_u16(&mut buffer, 240); // cx
+    write_u16(&mut buffer, 80); // cy
+    
+    write_u16(&mut buffer, 0); // menu
+    write_u16(&mut buffer, 0); // class
+    
+    let title = to_wide("Settings - Shortcuts");
+    for &ch in &title { write_u16(&mut buffer, ch); }
+    
+    write_u16(&mut buffer, 10); // font size
+    let font_name = to_wide("Segoe UI");
+    for &ch in &font_name { write_u16(&mut buffer, ch); }
+
+    align_dword(&mut buffer);
+
+    let label_style = WS_CHILD as u32 | WS_VISIBLE as u32;
+    let label1 = to_wide("Toggle shortcut:");
+    write_item(&mut buffer, label_style, 0, 10, 12, 80, 12, 0, 0x0082, &label1);
+
+    let btn_style = WS_CHILD as u32 | WS_VISIBLE as u32 | WS_TABSTOP as u32;
+    let btn_label = to_wide("X");
+    write_item(&mut buffer, btn_style, 0, 210, 10, 20, 16, IDC_TOGGLE_HOTKEY_CLEAR as u16, 0x0080, &btn_label);
+
+    let ok_label = to_wide("OK");
+    write_item(&mut buffer, btn_style, 0, 120, 55, 50, 14, IDC_OK as u16, 0x0080, &ok_label);
+
+    let cancel_label = to_wide("Cancel");
+    write_item(&mut buffer, btn_style, 0, 180, 55, 50, 14, IDC_CANCEL as u16, 0x0080, &cancel_label);
+
+    buffer
 }

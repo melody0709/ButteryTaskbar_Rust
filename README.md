@@ -1,10 +1,11 @@
-# Buttery Taskbar (Rust Rewrite)
+# Buttery Taskbar v2.5.1
 
 English | [简体中文](README.zh-CN.md)
 
-This repository now hosts a Rust rewrite of Buttery Taskbar, based on the behavior and feature set of the original Jai implementation.
+This repository hosts a Rust rewrite of Buttery Taskbar, based on the behavior and feature set of the original Jai implementation.
 
-The legacy Jai source tree is still included locally under `ButteryTaskbar2_jai/`, while the repository root is now the actively developed Rust project.
+The legacy Jai source tree is still included locally under `ButteryTaskbar2_jai/`, while the repository root is the actively developed Rust project.
+
 ## Project Screenshots
 
 <img src="assets/icon.webp" width="50%" />
@@ -27,7 +28,7 @@ The Rust port is based on the old version's behavior, including:
 
 - tray-based control flow
 - taskbar show/hide control through Win32 APIs
-- `Ctrl` + `Win` + `F11` toggle support
+- customizable toggle shortcut (default: `Ctrl` + `Win` + `F11`)
 - scroll-at-screen-edge activation
 - auto-hide state coordination with Windows
 - startup registration in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
@@ -39,20 +40,22 @@ Implemented in the current Rust version:
 - hidden Win32 message window
 - native tray icon and callback handling
 - Win11-safe tray callback handling for context-menu invocation
-- native popup tray menu
+- native popup tray menu with version display
 - taskbar visibility control for primary and secondary taskbars
 - Start/menu/taskbar shell-UI visibility heuristics
-- keyboard hook for the Windows key and `Ctrl` + `Win` + `F11`
-- mouse wheel hook for screen-edge reveal
+- keyboard hook for the Windows key tracking
+- customizable global hotkey via `RegisterHotKey` API
+- mouse hook for screen-edge reveal (2-pixel activation zone) and bottom-edge mouse move detection
 - config persistence in `%APPDATA%\Buttery Taskbar\config.json`
 - startup toggle through the per-user Run registry key
-- original icon carried over from the old release and embedded into the Rust executable
+- icon embedded via `tauri-winres`
 
 Current differences from the old Jai version:
 
 - the old custom-drawn menu UI has been replaced by a native Windows popup menu
 - the old GitHub update-check status UI has not yet been reimplemented
 - the config format is now JSON instead of the fixed-size Jai binary config block
+- the toggle shortcut is now customizable instead of hardcoded
 
 ## Project Layout
 
@@ -60,21 +63,19 @@ Current differences from the old Jai version:
 - `assets/`: Rust-side application assets, including the embedded app icon
 - `ButteryTaskbar2_jai/`: archived legacy Jai implementation kept for reference and parity work
 
-
-
 ## Build
 
 Requirements:
 
 - Windows
-- Rust toolchain with Cargo
-- MSVC toolchain / Windows SDK resource tools available to Cargo for icon embedding
+- Rust toolchain with Cargo (edition 2024)
+- MSVC toolchain / Windows SDK
 
 Commands:
 
 ```pwsh
-cargo build
-cargo build --release
+cargo build          # debug build
+cargo build --release # release build
 ```
 
 Release binary:
@@ -83,14 +84,68 @@ Release binary:
 target/release/buttery-taskbar.exe
 ```
 
-## Runtime Behavior
+One-click release build with versioned filename:
 
-The Rust rewrite currently keeps the following behavior model:
+```pwsh
+.\build_release.bat
+# produces: target\release\buttery-taskbar_v2.5.1.exe
+```
+
+## Configuration
+
+Config file: `%APPDATA%\Buttery Taskbar\config.json`
+
+| Option | Type | Default | Menu Label | Description |
+|--------|------|---------|------------|-------------|
+| `enabled` | bool | `true` | Enabled | Master switch for taskbar hiding |
+| `scroll_activation_enabled` | bool | `true` | Scroll to open Start | Scroll at bottom edge to open Start menu |
+| `toggle_shortcut` | object | `Win+Ctrl+F11` | Settings... | Customizable toggle hotkey |
+| `auto_launch_enabled` | bool | `false` | Start at log-in (non-admin) | Auto-start at log-in |
+| `autohide_when_disabled` | bool | system state | Keep auto-hide when disabled | Keep Windows auto-hide when Buttery is disabled |
+
+### Option Details
+
+#### Enabled
+
+Master switch. When enabled, Buttery aggressively hides the taskbar. The taskbar only appears when needed (Win key, Start menu, tray overflow, etc.). When disabled, the taskbar returns to its default Windows behavior.
+
+#### Scroll to open Start
+
+Controls whether scrolling the mouse wheel at the bottom edge of the screen opens the Start menu.
+
+| Scroll to open Start | Mouse touch bottom edge | Scroll at bottom edge |
+|---------------------|------------------------|----------------------|
+| ☑ Checked | Taskbar appears (more reliable via hook + Windows auto-hide) | Start menu opens |
+| ☐ Unchecked | Taskbar appears (Windows auto-hide only, may be less reliable) | No special effect |
+
+**Note**: Mouse touch at the bottom edge always reveals the taskbar when Enabled is checked. This is a side effect of `ABS_AUTOHIDE`, which is required for reliable taskbar hiding. When this option is checked, the mouse hook also improves the reliability of bottom-edge taskbar reveal.
+
+#### Keep auto-hide when disabled
+
+Only takes effect when Buttery is **disabled** (Enabled is unchecked):
+
+| Keep auto-hide | Behavior when Buttery is disabled |
+|----------------|----------------------------------|
+| ☑ Checked | Taskbar stays in Windows native auto-hide mode (still hides automatically) |
+| ☐ Unchecked | Taskbar is always visible (restores Windows default) |
+
+### Behavior Matrix
+
+| Enabled | Scroll to open Start | Keep auto-hide | Mouse bottom edge | Scroll at bottom | Win key / Shell UI |
+|---------|---------------------|---------------|-------------------|-----------------|-------------------|
+| ✅ | ✅ | any | ✅ Shows | ✅ Start menu opens | ✅ |
+| ✅ | ❌ | any | ✅ Shows | ❌ No effect | ✅ |
+| ❌ | any | ✅ | ✅ (Windows native) | ❌ | ✅ |
+| ❌ | any | ❌ | ❌ (always visible) | ❌ | ✅ |
+
+## Runtime Behavior
 
 - the taskbar is visible while the Windows key is held
 - the taskbar is visible while shell UI such as Start or tray overflow is foregrounded
 - the tray menu is opened from the notification icon and is positioned above the taskbar edge
-- when enabled, scrolling at the bottom edge of the primary monitor triggers a synthetic Windows key press so Start can open
+- when Enabled, mouse touching the bottom screen edge always shows the taskbar (Windows auto-hide behavior)
+- when Scroll to open Start is on, scrolling at the bottom edge opens the Start menu
+- when Scroll to open Start is off, scrolling at the bottom edge has no special effect
 - when disabled, the app can optionally keep Windows auto-hide enabled
 
 ## Legacy Reference

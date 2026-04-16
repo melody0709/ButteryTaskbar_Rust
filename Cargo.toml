@@ -1,6 +1,6 @@
 [package]
 name = "buttery-taskbar"
-version = "0.1.0"
+version = "2.5.1"
 edition = "2024"
 
 [dependencies]
@@ -24,7 +24,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [build-dependencies]
-winres = "0.1"
+tauri-winres = "0.3"
 
 [profile.release]
 lto = true

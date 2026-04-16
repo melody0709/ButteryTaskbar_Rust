@@ -1,10 +1,10 @@
-# Buttery Taskbar（Rust 重构版）
+# Buttery Taskbar v2.5.1
 
 [English](README.md) | 简体中文
 
-这个仓库现在承载的是 Buttery Taskbar 的 Rust 重构版本，行为目标以原来的 Jai 版本为基准。
+本仓库是 Buttery Taskbar 的 Rust 重写版本，基于原版 Jai 实现的行为和功能集进行重构。
 
-旧版 Jai 工程仍然完整保留在 `ButteryTaskbar2_jai/` 目录中，仓库根目录则只保留新的 Rust 项目。
+遗留的 Jai 源码仍保留在 `ButteryTaskbar2_jai/` 目录下，仓库根目录为活跃开发的 Rust 项目。
 
 ## 项目截图
 
@@ -12,88 +12,144 @@
 
 <img src="assets/right.webp" width="50%" />
 
-## 项目说明
+## 项目简介
 
-Buttery Taskbar 的目标是比 Windows 自带的自动隐藏更“激进”地隐藏任务栏。只有在真正需要的时候，比如开始菜单、托盘溢出区或其他 Shell 界面激活时，任务栏才会重新出现。
+Buttery Taskbar 比 Windows 自带的自动隐藏更"激进"地隐藏任务栏。任务栏只在真正需要时才出现——例如开始菜单、系统托盘溢出区等 Shell 界面激活时。
 
-这次 Rust 版本不是简单改壳，而是以旧项目功能为基准进行重构，目的是摆脱 Jai 编译环境依赖，同时更容易维护 Windows 10 和 Windows 11 的兼容性。
+这个 Rust 版本是对原项目的重构，目标是保留用户体验行为，同时去除对 Jai 编译器的依赖，使 Windows 10/11 支持更易维护。
 
-## 与旧版的关系
+## 与原版的关系
 
-- 原始上游仓库：[LuisThiamNye/ButteryTaskbar2](https://github.com/LuisThiamNye/ButteryTaskbar2)
-- 原始上游发布页：[ButteryTaskbar2 releases](https://github.com/LuisThiamNye/ButteryTaskbar2/releases)
-- 本仓库内保留的旧版源码：`ButteryTaskbar2_jai/`
+- 原版上游项目：[LuisThiamNye/ButteryTaskbar2](https://github.com/LuisThiamNye/ButteryTaskbar2)
+- 原版发布页：[ButteryTaskbar2 releases](https://github.com/LuisThiamNye/ButteryTaskbar2/releases)
+- 本仓库中的遗留源码：`ButteryTaskbar2_jai/`
 
-Rust 重构版沿用了旧版的核心设计，包括：
+Rust 移植版基于原版的行为，包括：
 
-- 托盘图标驱动的控制入口
-- 基于 Win32 API 的任务栏显隐控制
-- `Ctrl` + `Win` + `F11` 的启用/禁用快捷键
-- 屏幕底边滚轮唤出逻辑
-- 与 Windows 自动隐藏状态协同
-- `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的开机启动开关
+- 基于托盘图标的控制流程
+- 通过 Win32 API 控制任务栏显隐
+- 可自定义切换快捷键（默认：`Ctrl` + `Win` + `F11`）
+- 屏幕底部边缘滚轮激活
+- 与 Windows 自动隐藏状态协调
+- 在 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 注册开机自启
 
-## 当前 Rust 版已实现功能
+## 当前 Rust 实现功能
 
-- 隐藏 Win32 消息窗口
+- 隐藏的 Win32 消息窗口
 - 原生托盘图标与回调处理
-- 面向 Win11 的托盘右键菜单兼容处理
-- 原生 Windows 弹出菜单
-- 主任务栏与副任务栏的显隐控制
-- 对开始菜单、托盘溢出区等 Shell 前台窗口的可见性判断
-- Windows 键与 `Ctrl` + `Win` + `F11` 的低级键盘钩子
-- 底边滚轮触发的鼠标钩子
-- `%APPDATA%\Buttery Taskbar\config.json` 配置持久化
-- 基于注册表的开机启动开关
-- 从旧版发布包中提取并嵌入的新程序图标
+- Win11 安全的托盘回调与右键菜单调用
+- 原生弹出式托盘菜单（含版本号显示）
+- 主显示器和副显示器任务栏显隐控制
+- 开始菜单/任务栏等 Shell UI 可见性启发式检测
+- 键盘钩子追踪 Win 键状态
+- 通过 `RegisterHotKey` API 实现可自定义全局热键
+- 鼠标钩子实现屏幕边缘唤出（2 像素激活区域）及底部边缘鼠标移动检测
+- 配置持久化至 `%APPDATA%\Buttery Taskbar\config.json`
+- 通过注册表 Run 键切换开机自启
+- 通过 `tauri-winres` 嵌入应用图标
 
-## 与旧版目前的差异
+与原版 Jai 实现的差异：
 
-- 旧版自绘菜单界面暂时改成了原生 Windows 右键菜单
-- 旧版菜单里的 GitHub 更新检查状态暂时还没有重做
-- 配置文件格式从旧版固定长度二进制改成了 JSON
+- 原版自绘菜单 UI 已替换为原生 Windows 弹出菜单
+- 原版 GitHub 更新检查 UI 尚未重新实现
+- 配置格式从固定大小二进制块改为 JSON
+- 切换快捷键从硬编码改为可自定义
 
-## 目录结构
+## 项目结构
 
-- `src/`：当前 Rust 实现
-- `assets/`：Rust 版资源文件，包括嵌入式图标
-- `ButteryTaskbar2_jai/`：保留的旧版 Jai 工程，用于参考和功能对照
+- `src/`：活跃的 Rust 实现
+- `assets/`：应用资源，包括嵌入的应用图标
+- `ButteryTaskbar2_jai/`：归档的遗留 Jai 实现，仅供参考
 
-## 构建方法
+## 构建
 
-要求：
+环境要求：
 
 - Windows
-- 已安装 Rust / Cargo
-- 可供 Cargo 调用的 MSVC 工具链和 Windows SDK 资源编译工具
+- Rust 工具链 + Cargo（edition 2024）
+- MSVC 工具链 / Windows SDK
 
-命令：
+构建命令：
 
 ```pwsh
-cargo build
-cargo build --release
+cargo build          # 开发构建
+cargo build --release # 发布构建
 ```
 
-Release 产物：
+发布二进制：
 
 ```text
 target/release/buttery-taskbar.exe
 ```
 
-## 当前运行行为
+一键构建带版本号的发布版：
 
-Rust 版目前保留了以下行为模型：
+```pwsh
+.\build_release.bat
+# 生成：target\release\buttery-taskbar_v2.5.1.exe
+```
 
-- 按住 Windows 键时显示任务栏
-- 当前台是开始菜单、托盘溢出区等 Shell 界面时显示任务栏
-- 从托盘图标打开右键菜单，菜单会尽量浮在任务栏上方
-- 启用滚轮功能后，在主显示器底边滚动会模拟一次 Windows 键以唤出开始菜单
-- 程序禁用时，可以按设置保留 Windows 自带自动隐藏
+## 配置
 
-## 旧版参考
+配置文件：`%APPDATA%\Buttery Taskbar\config.json`
 
-如果你需要查看旧版实现、做行为对照或继续迁移：
+| 选项 | 类型 | 默认值 | 菜单文字 | 说明 |
+|------|------|--------|---------|------|
+| `enabled` | bool | `true` | Enabled | 任务栏隐藏主开关 |
+| `scroll_activation_enabled` | bool | `true` | Scroll to open Start | 底部边缘滚轮打开开始菜单 |
+| `toggle_shortcut` | object | `Win+Ctrl+F11` | Settings... | 可自定义切换快捷键 |
+| `auto_launch_enabled` | bool | `false` | Start at log-in (non-admin) | 开机自启 |
+| `autohide_when_disabled` | bool | 系统当前状态 | Keep auto-hide when disabled | 禁用 Buttery 时保持 Windows 自动隐藏 |
 
-- 旧版本地说明：`ButteryTaskbar2_jai/README.md`
-- 旧版本地源码：`ButteryTaskbar2_jai/`
-- 旧版上游仓库：[LuisThiamNye/ButteryTaskbar2](https://github.com/LuisThiamNye/ButteryTaskbar2)
+### 选项详解
+
+#### Enabled（主开关）
+
+启用时，Buttery 激进地隐藏任务栏，任务栏只在需要时出现（Win 键、开始菜单、托盘溢出等）。禁用时，任务栏恢复 Windows 默认行为。
+
+#### Scroll to open Start（底部滚轮打开开始菜单）
+
+控制是否允许在屏幕底部边缘通过鼠标滚轮打开开始菜单。
+
+| Scroll to open Start | 鼠标触碰底部边缘 | 底部边缘滚轮 |
+|---------------------|----------------|------------|
+| ☑ 勾选 | 任务栏出现（钩子检测 + Windows 自动隐藏，更可靠） | 打开开始菜单 |
+| ☐ 不勾选 | 任务栏出现（仅 Windows 自动隐藏，可能不太可靠） | 无特殊效果 |
+
+**注意**：鼠标触碰底部边缘显示任务栏在 Enabled 勾选时始终生效，这是 `ABS_AUTOHIDE` 的副作用（`ABS_AUTOHIDE` 是任务栏可靠隐藏的必要条件）。勾选此选项时，鼠标钩子也会改善触底显示任务栏的可靠性。
+
+#### Keep auto-hide when disabled（禁用时保持自动隐藏）
+
+仅在 Buttery **被禁用**（Enabled 未勾选）时生效：
+
+| Keep auto-hide | Buttery 禁用后的行为 |
+|----------------|-------------------|
+| ☑ 勾选 | 任务栏仍以 Windows 原生方式自动隐藏 |
+| ☐ 不勾选 | 任务栏始终可见（恢复 Windows 默认） |
+
+### 行为矩阵
+
+| Enabled | Scroll to open Start | Keep auto-hide | 鼠标触碰底部 | 底部滚轮 | Win键/Shell UI |
+|---------|---------------------|---------------|------------|---------|---------------|
+| ✅ | ✅ | 任意 | ✅ 显示 | ✅ 打开开始菜单 | ✅ |
+| ✅ | ❌ | 任意 | ✅ 显示 | ❌ 无特殊效果 | ✅ |
+| ❌ | 任意 | ✅ | ✅ (Windows原生) | ❌ | ✅ |
+| ❌ | 任意 | ❌ | ❌ (任务栏始终可见) | ❌ | ✅ |
+
+## 运行时行为
+
+- 按住 Win 键时任务栏可见
+- 开始菜单、托盘溢出等 Shell UI 处于前台时任务栏可见
+- 通过托盘图标打开右键菜单，菜单位置在任务栏边缘上方
+- 启用时，鼠标触碰屏幕底部始终会显示任务栏（Windows 自动隐藏行为）
+- Scroll to open Start 开启时，底部滚轮打开开始菜单
+- Scroll to open Start 关闭时，底部滚轮无特殊效果
+- 禁用时，可选择保持 Windows 原生自动隐藏模式
+
+## 遗留参考
+
+如需原版实现用于对比、调试或迁移：
+
+- 本地遗留 README：`ButteryTaskbar2_jai/README.md`
+- 本地遗留源码：`ButteryTaskbar2_jai/`
+- 原版上游仓库：[LuisThiamNye/ButteryTaskbar2](https://github.com/LuisThiamNye/ButteryTaskbar2)
